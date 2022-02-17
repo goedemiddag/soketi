@@ -17,6 +17,7 @@ export class Utils {
         'private-*',
         'private-encrypted-*',
         'presence-*',
+        'presence-silent-*',
     ];
 
     /**
@@ -72,8 +73,17 @@ export class Utils {
         return channel.lastIndexOf('presence-', 0) === 0;
     }
 
+
     /**
-     * Check if the given channel name is a encrypted private channel.
+     * Check if the given channel name is a silent presence channel.
+     */
+    static isSilentPresenceChannel(channel: string): boolean {
+        return channel.lastIndexOf('presence-silent-', 0) === 0;
+    }
+
+
+    /**
+     * Check if the given channel name is an encrypted private channel.
      */
     static isEncryptedPrivateChannel(channel: string): boolean {
         return channel.lastIndexOf('private-encrypted-', 0) === 0;

@@ -5,6 +5,7 @@ import { HttpRequest, HttpResponse } from 'uWebSockets.js';
 import { Log } from './log';
 import { Namespace } from './namespace';
 import { PresenceChannelManager } from './channels';
+import { SilentPresenceChannelManager } from './channels';
 import { PresenceMemberInfo } from './channels/presence-channel-manager';
 import { PrivateChannelManager } from './channels';
 import { PublicChannelManager } from './channels';
@@ -37,6 +38,11 @@ export class WsHandler {
     protected presenceChannelManager: PresenceChannelManager;
 
     /**
+     * The manager for the silent presence channels.
+     */
+    protected silentPresenceChannelManager: SilentPresenceChannelManager;
+
+    /**
      * Initialize the Websocket connections handler.
      */
     constructor(protected server: Server) {
@@ -44,6 +50,7 @@ export class WsHandler {
         this.privateChannelManager = new PrivateChannelManager(server);
         this.encryptedPrivateChannelManager = new EncryptedPrivateChannelManager(server);
         this.presenceChannelManager = new PresenceChannelManager(server);
+        this.silentPresenceChannelManager = new SilentPresenceChannelManager(server);
     }
 
     /**
@@ -400,9 +407,12 @@ export class WsHandler {
                 return;
             }
 
+            let isSilentPresenceChannel = channelManager instanceof SilentPresenceChannelManager;
+
             // Otherwise, prepare a response for the presence channel.
             this.server.adapter.getChannelMembers(ws.app.id, channel, false).then(members => {
                 let { user_id, user_info } = response.member;
+                let presence_channel = channel.replace(/^(presence-silent-)/, 'presence-')
 
                 ws.presence.set(channel, response.member);
 
@@ -413,9 +423,9 @@ export class WsHandler {
                 if (!members.has(user_id as string)) {
                     this.server.webhookSender.sendMemberAdded(ws.app, channel, user_id as string);
 
-                    this.server.adapter.send(ws.app.id, channel, JSON.stringify({
+                    this.server.adapter.send(ws.app.id, presence_channel, JSON.stringify({
                         event: 'pusher_internal:member_added',
-                        channel,
+                        channel: channel,
                         data: JSON.stringify({
                             user_id: user_id,
                             user_info: user_info,
@@ -425,9 +435,25 @@ export class WsHandler {
                     members.set(user_id as string, user_info);
                 }
 
+                // If the member is in a silent presence channel, we send the message including
+                // only the user itself and finally to the regular presence channel
+                if (isSilentPresenceChannel) {
+                    ws.sendJson({
+                        event: 'pusher_internal:subscription_succeeded',
+                        channel,
+                        data: JSON.stringify({
+                            presence: {
+                                ids: [user_id as string],
+                                hash: { [user_id as string]: user_info },
+                                count: 1,
+                            },
+                        }),
+                    });
+                }
+
                 let broadcastMessage = {
                     event: 'pusher_internal:subscription_succeeded',
-                    channel,
+                    channel: presence_channel,
                     data: JSON.stringify({
                         presence: {
                             ids: Array.from(members.keys()),
@@ -472,19 +498,23 @@ export class WsHandler {
                     // Make sure to update the socket after new data was pushed in.
                     this.server.adapter.addSocket(ws.app.id, ws);
 
-                    this.server.adapter.getChannelMembers(ws.app.id, channel, false).then(members => {
-                        if (!members.has(member.user_id as string)) {
-                            this.server.webhookSender.sendMemberRemoved(ws.app, channel, member.user_id);
+                    let presence_channel = channel.replace(/^(presence-silent-)/, 'presence-')
 
-                            this.server.adapter.send(ws.app.id, channel, JSON.stringify({
-                                event: 'pusher_internal:member_removed',
-                                channel,
-                                data: JSON.stringify({
-                                    user_id: member.user_id,
-                                }),
-                            }), ws.id);
-                        }
-                    });
+                    if(channel === presence_channel || ws.presence.has(presence_channel)) {
+                        this.server.adapter.getChannelMembers(ws.app.id, channel, false).then(members => {
+                            if (!members.has(member.user_id as string)) {
+                                this.server.webhookSender.sendMemberRemoved(ws.app, channel, member.user_id);
+
+                                this.server.adapter.send(ws.app.id, presence_channel, JSON.stringify({
+                                    event: 'pusher_internal:member_removed',
+                                    channel: presence_channel,
+                                    data: JSON.stringify({
+                                        user_id: member.user_id,
+                                    }),
+                                }), ws.id);
+                            }
+                        });
+                    }
                 }
 
                 ws.subscribedChannels.delete(channel);
@@ -607,8 +637,10 @@ export class WsHandler {
      * Get the channel manager for the given channel name,
      * respecting the Pusher protocol.
      */
-    getChannelManagerFor(channel: string): PublicChannelManager|PrivateChannelManager|EncryptedPrivateChannelManager|PresenceChannelManager {
-        if (Utils.isPresenceChannel(channel)) {
+    getChannelManagerFor(channel: string): PublicChannelManager|PrivateChannelManager|EncryptedPrivateChannelManager|PresenceChannelManager|SilentPresenceChannelManager {
+        if (Utils.isSilentPresenceChannel(channel)) {
+            return this.silentPresenceChannelManager;
+        } else if (Utils.isPresenceChannel(channel)) {
             return this.presenceChannelManager;
         } else if (Utils.isEncryptedPrivateChannel(channel)) {
             return this.encryptedPrivateChannelManager;
