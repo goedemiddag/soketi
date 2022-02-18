@@ -425,7 +425,7 @@ export class WsHandler {
 
                     this.server.adapter.send(ws.app.id, presence_channel, JSON.stringify({
                         event: 'pusher_internal:member_added',
-                        channel: channel,
+                        channel: presence_channel,
                         data: JSON.stringify({
                             user_id: user_id,
                             user_info: user_info,
@@ -449,21 +449,28 @@ export class WsHandler {
                             },
                         }),
                     });
+
+                    return;
                 }
 
-                let broadcastMessage = {
-                    event: 'pusher_internal:subscription_succeeded',
-                    channel: presence_channel,
-                    data: JSON.stringify({
-                        presence: {
-                            ids: Array.from(members.keys()),
-                            hash: Object.fromEntries(members),
-                            count: members.size,
-                        },
-                    }),
-                };
+                // Combine the members of this presence channel with the members of the silent presence channel
+                this.server.adapter.getChannelMembers(ws.app.id, channel.replace(/^(presence-)/, 'presence-silent-'), false).then(silentMembers => {
+                    let allMembers = new Map([...Array.from(silentMembers.entries()), ...Array.from(members.entries())])
 
-                ws.sendJson(broadcastMessage);
+                    let broadcastMessage = {
+                        event: 'pusher_internal:subscription_succeeded',
+                        channel: presence_channel,
+                        data: JSON.stringify({
+                            presence: {
+                                ids: Array.from(allMembers.keys()),
+                                hash: Object.fromEntries(allMembers),
+                                count: allMembers.size,
+                            },
+                        }),
+                    };
+
+                    ws.sendJson(broadcastMessage);
+                })
             }).catch(err => {
                 Log.error(err);
 
@@ -490,7 +497,7 @@ export class WsHandler {
             let member = ws.presence.get(channel);
 
             if (response.left) {
-                // Send presence channel-speific events and delete specific data.
+                // Send presence channel-specific events and delete specific data.
                 // This can happen only if the user is connected to the presence channel.
                 if (channelManager instanceof PresenceChannelManager && ws.presence.has(channel)) {
                     ws.presence.delete(channel);
@@ -500,21 +507,19 @@ export class WsHandler {
 
                     let presence_channel = channel.replace(/^(presence-silent-)/, 'presence-')
 
-                    if(channel === presence_channel || ws.presence.has(presence_channel)) {
-                        this.server.adapter.getChannelMembers(ws.app.id, channel, false).then(members => {
-                            if (!members.has(member.user_id as string)) {
-                                this.server.webhookSender.sendMemberRemoved(ws.app, channel, member.user_id);
+                    this.server.adapter.getChannelMembers(ws.app.id, channel, false).then(members => {
+                        if (!members.has(member.user_id as string)) {
+                            this.server.webhookSender.sendMemberRemoved(ws.app, channel, member.user_id);
 
-                                this.server.adapter.send(ws.app.id, presence_channel, JSON.stringify({
-                                    event: 'pusher_internal:member_removed',
-                                    channel: presence_channel,
-                                    data: JSON.stringify({
-                                        user_id: member.user_id,
-                                    }),
-                                }), ws.id);
-                            }
-                        });
-                    }
+                            this.server.adapter.send(ws.app.id, presence_channel, JSON.stringify({
+                                event: 'pusher_internal:member_removed',
+                                channel: presence_channel,
+                                data: JSON.stringify({
+                                    user_id: member.user_id,
+                                }),
+                            }), ws.id);
+                        }
+                    });
                 }
 
                 ws.subscribedChannels.delete(channel);
